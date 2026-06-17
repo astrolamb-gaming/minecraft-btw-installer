@@ -13,7 +13,8 @@ $ProgressPreference = 'SilentlyContinue'
 
 # 2. Install Eclipse Temurin Java 17 via Windows Package Manager (Winget)
 Write-Host "Installing Eclipse Temurin Java 17..." -ForegroundColor Cyan
-winget install --id EclipseAdoptium.Temurin.17.JDK --silent --accept-source-agreements --accept-package-agreements
+# Added --include-unknown to handle environment differences inside admin elevation
+winget install --id EclipseAdoptium.Temurin.17.JDK --silent --accept-source-agreements --accept-package-agreements --include-unknown
 
 # 3. Define local destination directories
 $downloadsFolder = [System.IO.Path]::Combine([Environment]::GetFolderPath('UserProfile'), 'Downloads')
@@ -29,23 +30,15 @@ if (-not (Test-Path -Path $modsFolder)) {
     Write-Host "Created directory: $modsFolder" -ForegroundColor Green
 }
 
-# 4. Download Legacy Fabric Installer using a secure raw stream block to prevent corruption
-# $fabricUrl = "https://legacyfabric.net"
+# 4. Download Legacy Fabric Installer using forced browser emulation headers
 $fabricUrl = "https://maven.legacyfabric.net/net/legacyfabric/fabric-installer/1.1.1/fabric-installer-1.1.1.jar"
-
 $fabricPath = Join-Path $downloadsFolder "fabric-installer-1.1.1.jar"
 
 Write-Host "Downloading Legacy Fabric Installer..." -ForegroundColor Cyan
-Invoke-WebRequest -Uri $fabricUrl -OutFile $fabricPath
-
-# Low-level request engine that forces full browser emulation to prevent corrupt downloads
-$webClient = New-Object System.Net.WebClient
-$webClient.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-$webClient.DownloadFile($fabricUrl, $fabricPath)
-$webClient.Dispose()
+# Cleaned up: Only use Invoke-WebRequest with UserAgent string to prevent locks or drops
+Invoke-WebRequest -Uri $fabricUrl -OutFile $fabricPath -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 # 5. Download Better Than Wolves CE Mod to the .minecraft/mods folder
-# $modUrl  = "https://modrinth.com"
 $modUrl = "https://cdn.modrinth.com/data/PiC4CKoa/versions/Pbz5N4Ul/btwce-3.1.0.jar?mr_download_reason=standalone&mr_game_version=1.6.4&mr_loader=legacy-fabric"
 $modPath = Join-Path $modsFolder "btwce-3.1.0.jar"
 
@@ -55,12 +48,13 @@ Invoke-WebRequest -Uri $modUrl -OutFile $modPath -UserAgent "Mozilla/5.0 (Window
 # Restore default progress bar setting
 $ProgressPreference = 'Continue'
 
-# System Lookup for the newly installed Temurin Java Paths
+# Dynamic System Lookup for the newly installed Temurin Java Paths
 $temurinBaseDir = "C:\Program Files\Eclipse Adoptium"
 $javaExePath = ""
 $javawPath = ""
 
 if (Test-Path $temurinBaseDir) {
+    # Dynamically grab whatever JDK 17 sub-version folder winget downloaded
     $jdkDir = Get-ChildItem -Path $temurinBaseDir -Directory | Where-Object { $_.Name -like "jdk-17*" } | Select-Object -First 1
     if ($jdkDir) {
         $javaExePath = Join-Path $jdkDir.FullName "bin\java.exe"
@@ -68,17 +62,17 @@ if (Test-Path $temurinBaseDir) {
     }
 }
 
-# Fallback strings if automatic lookup fails
-if (-not $javaExePath -or -not (Test-Path $javaExePath)) { $javaExePath = "C:\Program Files\Eclipse Adoptium\jdk-17.0.10.7-hotspot\bin\java.exe" }
-if (-not $javawPath -or -not (Test-Path $javawPath)) { $javawPath = "C:\Program Files\Eclipse Adoptium\jdk-17.0.10.7-hotspot\bin\javaw.exe" }
+# Fallback checking to stop execution if pathing is fundamentally missing
+if (-not $javaExePath -or -not (Test-Path $javaExePath)) { 
+    Write-Host "Critical Error: Java 17 path could not be resolved automatically." -ForegroundColor Red
+    Read-Host "Press Enter to exit"
+    Exit
+}
 
 # =========================================================================
 # 6. RUN THE FABRIC INSTALLER HEADLESSLY (NO POPUP WINDOW REQUIRED)
 # =========================================================================
 Write-Host "`nRunning Legacy Fabric Installer headlessly via CLI..." -ForegroundColor Green
-
-
-# Execute the installer silently targeting client version 1.6.4
 Start-Process -FilePath $javaExePath -ArgumentList "-jar `"$fabricPath`" client -dir `"$minecraftDir`" -mcversion $mcVersion -noprofile" -Wait -NoNewWindow
 
 # =========================================================================
@@ -91,20 +85,23 @@ $jsonPath = Join-Path $minecraftDir "launcher_profiles.json"
 if (Test-Path $jsonPath) {
     $json = Get-Content -Raw -Path $jsonPath | ConvertFrom-Json
     
-    if ($json.profiles -and $json.profiles.'fabric-loader-$mcVersion') {
+    # FIX: Changed single quotes to double quotes so $mcVersion resolves to 1.6.4
+    $profileName = "fabric-loader-$mcVersion"
+    
+    if ($json.profiles -and $json.profiles.$profileName) {
         
-        if ($json.profiles."fabric-loader-$mcVersion".PSObject.Properties['javaDir']) {
-            $json.profiles."fabric-loader-$mcVersion".javaDir = $javawPath
+        if ($json.profiles.$profileName.PSObject.Properties['javaDir']) {
+            $json.profiles.$profileName.javaDir = $javawPath
             Write-Host "Replaced existing javaDir attribute." -ForegroundColor Yellow
         } else {
-            $json.profiles."fabric-loader-$mcVersion" | Add-Member -MemberType NoteProperty -Name "javaDir" -Value $javawPath -Force
+            $json.profiles.$profileName | Add-Member -MemberType NoteProperty -Name "javaDir" -Value $javawPath -Force
             Write-Host "Added new javaDir attribute." -ForegroundColor Green
         }
         
         $json | ConvertTo-Json -Depth 100 | Set-Content -Path $jsonPath
-        Write-Host "Successfully attached Java 17 path to 'fabric-loader-$mcVersion' profile!" -ForegroundColor Green
+        Write-Host "Successfully attached Java 17 path to '$profileName' profile!" -ForegroundColor Green
     } else {
-        Write-Host "Profile block 'fabric-loader-$mcVersion' missing. Generating it manually..." -ForegroundColor Yellow
+        Write-Host "Profile block '$profileName' missing. Generating it manually..." -ForegroundColor Yellow
         
         if (-not $json.profiles) { $json | Add-Member -MemberType NoteProperty -Name "profiles" -Value (New-Object PSObject) }
         
@@ -114,13 +111,13 @@ if (Test-Path $jsonPath) {
             javaDir       = $javawPath
             lastUsed      = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss.000Z")
             lastVersionId = "fabric-loader-$mcLauncherVersion-$mcVersion"
-            name          = "fabric-loader-$mcVersion"
+            name          = $profileName
             type          = "custom"
         }
         
-        $json.profiles | Add-Member -MemberType NoteProperty -Name "fabric-loader-$mcVersion" -Value $newProfile -Force
+        $json.profiles | Add-Member -MemberType NoteProperty -Name $profileName -Value $newProfile -Force
         $json | ConvertTo-Json -Depth 100 | Set-Content -Path $jsonPath
-        Write-Host "Successfully injected custom 'fabric-loader-$mcVersion' configuration object directly!" -ForegroundColor Green
+        Write-Host "Successfully injected custom '$profileName' configuration object directly!" -ForegroundColor Green
     }
 } else {
     Write-Host "Error: launcher_profiles.json file could not be found at path: $jsonPath" -ForegroundColor Red
