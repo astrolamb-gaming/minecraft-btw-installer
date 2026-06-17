@@ -73,7 +73,7 @@ if (-not $javaExePath -or -not (Test-Path $javaExePath)) {
 # 6. RUN THE FABRIC INSTALLER HEADLESSLY (NO POPUP WINDOW REQUIRED)
 # =========================================================================
 Write-Host "`nRunning Legacy Fabric Installer headlessly via CLI..." -ForegroundColor Green
-Start-Process -FilePath $javaExePath -ArgumentList "-jar `"$fabricPath`" client -dir `"$minecraftDir`" -mcversion $mcVersion -noprofile" -Wait -NoNewWindow
+Start-Process -FilePath $javaExePath -ArgumentList "-jar `"$fabricPath`" client -dir `"$minecraftDir`" -mcversion `"$mcVersion`" -noprofile" -Wait -NoNewWindow
 
 # =========================================================================
 # 7. MODIFY THE JSON FILE
